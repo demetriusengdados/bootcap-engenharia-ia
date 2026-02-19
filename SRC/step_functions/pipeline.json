@@ -1,0 +1,137 @@
+{
+  "Comment": "Pipeline: Glue Bronze->Silver, valida no Athena, cria Gold via CTAS",
+  "StartAt": "StartGlueJob",
+  "States": {
+    "StartGlueJob": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "bronze-to-silver",
+        "Arguments": {
+          "--S3_BUCKET.$": "$.S3_BUCKET"
+        }
+      },
+      "Next": "StartValidationQuery"
+    },
+
+    "StartValidationQuery": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution",
+      "Parameters": {
+        "QueryString.$": "$.validation_sql",
+        "WorkGroup.$": "$.athena_workgroup",
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.athena_output"
+        }
+      },
+      "ResultPath": "$.validation_query",
+      "Next": "WaitValidation"
+    },
+
+    "WaitValidation": {
+      "Type": "Wait",
+      "Seconds": 10,
+      "Next": "GetValidationStatus"
+    },
+
+    "GetValidationStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:getQueryExecution",
+      "Parameters": {
+        "QueryExecutionId.$": "$.validation_query.QueryExecutionId"
+      },
+      "ResultPath": "$.validation_status",
+      "Next": "ValidationComplete?"
+    },
+
+    "ValidationComplete?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validation_status.QueryExecution.Status.State",
+          "StringEquals": "SUCCEEDED",
+          "Next": "StartGoldQuery"
+        },
+        {
+          "Variable": "$.validation_status.QueryExecution.Status.State",
+          "StringEquals": "FAILED",
+          "Next": "FailValidation"
+        },
+        {
+          "Variable": "$.validation_status.QueryExecution.Status.State",
+          "StringEquals": "CANCELLED",
+          "Next": "FailValidation"
+        }
+      ],
+      "Default": "WaitValidation"
+    },
+
+    "FailValidation": {
+      "Type": "Fail",
+      "Error": "ValidationFailed",
+      "Cause": "Athena validation query failed."
+    },
+
+    "StartGoldQuery": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution",
+      "Parameters": {
+        "QueryString.$": "$.gold_sql",
+        "WorkGroup.$": "$.athena_workgroup",
+        "ResultConfiguration": {
+          "OutputLocation.$": "$.athena_output"
+        }
+      },
+      "ResultPath": "$.gold_query",
+      "Next": "WaitGold"
+    },
+
+    "WaitGold": {
+      "Type": "Wait",
+      "Seconds": 10,
+      "Next": "GetGoldStatus"
+    },
+
+    "GetGoldStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:getQueryExecution",
+      "Parameters": {
+        "QueryExecutionId.$": "$.gold_query.QueryExecutionId"
+      },
+      "ResultPath": "$.gold_status",
+      "Next": "GoldComplete?"
+    },
+
+    "GoldComplete?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.gold_status.QueryExecution.Status.State",
+          "StringEquals": "SUCCEEDED",
+          "Next": "Success"
+        },
+        {
+          "Variable": "$.gold_status.QueryExecution.Status.State",
+          "StringEquals": "FAILED",
+          "Next": "FailGold"
+        },
+        {
+          "Variable": "$.gold_status.QueryExecution.Status.State",
+          "StringEquals": "CANCELLED",
+          "Next": "FailGold"
+        }
+      ],
+      "Default": "WaitGold"
+    },
+
+    "FailGold": {
+      "Type": "Fail",
+      "Error": "GoldFailed",
+      "Cause": "Athena Gold CTAS failed."
+    },
+
+    "Success": {
+      "Type": "Succeed"
+    }
+  }
+}
